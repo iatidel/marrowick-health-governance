@@ -218,3 +218,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# AWS and secrets
+.aws/
+*.pem
+*.key
+credentials
+.env
+
+# Large evidence files
+evidence/*.mp4
+evidence/*.mov
