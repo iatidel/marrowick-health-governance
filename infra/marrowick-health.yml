@@ -1,0 +1,154 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Marrowick Health Analytics - Governance, Security, and Compliance for a Regulated Multi-Tenant Data Platform'
+
+Parameters:
+  BucketPrefix:
+    Type: String
+    Default: marrowick
+    Description: Prefix for tenant bucket names
+
+  KMSKeyArn:
+    Type: String
+    Description: ARN of existing customer-managed KMS key
+
+  LabRoleArn:
+    Type: String
+    Description: ARN of existing AWS Academy LabRole
+
+Resources:
+
+  Tenant1Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${BucketPrefix}-tenant1'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref KMSKeyArn
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  Tenant2Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${BucketPrefix}-tenant2'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref KMSKeyArn
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  Tenant3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${BucketPrefix}-tenant3'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref KMSKeyArn
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  FolderCreatorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${BucketPrefix}-folder-creator'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !Ref LabRoleArn
+      Timeout: 120
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import urllib.request
+
+          s3 = boto3.client("s3")
+
+          def send_response(event, context, status, reason="OK"):
+              response = {
+                  "Status": status,
+                  "Reason": str(reason)[:1000],
+                  "PhysicalResourceId": "abc-health-folder-markers",
+                  "StackId": event["StackId"],
+                  "RequestId": event["RequestId"],
+                  "LogicalResourceId": event["LogicalResourceId"],
+                  "Data": {}
+              }
+
+              body = json.dumps(response).encode("utf-8")
+              request = urllib.request.Request(
+                  event["ResponseURL"],
+                  data=body,
+                  headers={"content-type": ""},
+                  method="PUT"
+              )
+
+              urllib.request.urlopen(request, timeout=20).read()
+
+          def handler(event, context):
+              try:
+                  if event["RequestType"] in ("Create", "Update"):
+                      buckets = event["ResourceProperties"]["Buckets"]
+
+                      for bucket in buckets:
+                          for folder in (
+                              "raw/",
+                              "quarantine/",
+                              "curated/"
+                          ):
+                              s3.put_object(
+                                  Bucket=bucket,
+                                  Key=folder,
+                                  Body=b""
+                              )
+
+                  send_response(event, context, "SUCCESS")
+
+              except Exception as error:
+                  send_response(
+                      event,
+                      context,
+                      "FAILED",
+                      str(error)
+                  )
+
+  TenantFolders:
+    Type: Custom::TenantFolders
+    Properties:
+      ServiceToken: !GetAtt FolderCreatorFunction.Arn
+      Buckets:
+        - !Ref Tenant1Bucket
+        - !Ref Tenant2Bucket
+        - !Ref Tenant3Bucket
+
+Outputs:
+  Tenant1BucketName:
+    Description: Tenant 1 bucket
+    Value: !Ref Tenant1Bucket
+
+  Tenant2BucketName:
+    Description: Tenant 2 bucket
+    Value: !Ref Tenant2Bucket
+
+  Tenant3BucketName:
+    Description: Tenant 3 bucket
+    Value: !Ref Tenant3Bucket
+
+  
