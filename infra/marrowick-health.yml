@@ -4,7 +4,7 @@ Description: 'Marrowick Health Analytics - Governance, Security, and Compliance 
 Parameters:
   BucketPrefix:
     Type: String
-    Default: marrowick
+    Default: marrowickh
     Description: Prefix for tenant bucket names
 
   KMSKeyArn:
@@ -15,12 +15,22 @@ Parameters:
     Type: String
     Description: ARN of existing AWS Academy LabRole
 
-Resources:
+  AlertEmail1:
+    Type: String
+    Default: ''
+    Description: Optional first SNS subscriber email
 
+Conditions:
+  HasAlertEmail1: !Not [!Equals [!Ref AlertEmail1, '']]
+
+Resources:
   Tenant1Bucket:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub '${BucketPrefix}-tenant1'
+      NotificationConfiguration:
+        EventBridgeConfiguration:
+          EventBridgeEnabled: true
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
@@ -32,11 +42,53 @@ Resources:
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+
+  Tenant1BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Tenant1Bucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyNonTLSAccess
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt Tenant1Bucket.Arn
+              - !Sub "${Tenant1Bucket.Arn}/*"
+            Condition:
+              Bool:
+                "aws:SecureTransport": "false"
+
+          - Sid: DenyUnencryptedUploads
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:PutObject"
+            Resource:
+              - !Sub "${Tenant1Bucket.Arn}/*"
+            Condition:
+              "Null":
+                "s3:x-amz-server-side-encryption": "true"
+
+          # Deny uploads using encryption other than SSE-KMS
+          - Sid: DenyIncorrectEncryption
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:PutObject"
+            Resource:
+              - !Sub "${Tenant1Bucket.Arn}/*"
+            Condition:
+              StringNotEquals:
+                "s3:x-amz-server-side-encryption": "aws:kms"
 
   Tenant2Bucket:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub '${BucketPrefix}-tenant2'
+      NotificationConfiguration:
+        EventBridgeConfiguration:
+          EventBridgeEnabled: true
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
@@ -49,10 +101,55 @@ Resources:
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
 
+  Tenant2BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Tenant2Bucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+
+          # Deny HTTP requests
+          - Sid: DenyNonTLSAccess
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt Tenant2Bucket.Arn
+              - !Sub "${Tenant2Bucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+          # Deny uploads without encryption header
+          - Sid: DenyUnencryptedUploads
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:PutObject"
+            Resource:
+              - !Sub "${Tenant2Bucket.Arn}/*"
+            Condition:
+              "Null":
+                s3:x-amz-server-side-encryption: "true"
+
+          # Deny uploads using encryption other than SSE-KMS
+          - Sid: DenyIncorrectEncryption
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:PutObject"
+            Resource:
+              - !Sub "${Tenant2Bucket.Arn}/*"
+            Condition:
+              StringNotEquals:
+                s3:x-amz-server-side-encryption: "aws:kms"
+
   Tenant3Bucket:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub '${BucketPrefix}-tenant3'
+      NotificationConfiguration:
+        EventBridgeConfiguration:
+          EventBridgeEnabled: true
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
@@ -64,6 +161,48 @@ Resources:
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+
+  Tenant3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Tenant3Bucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+
+          # Deny HTTP requests
+          - Sid: DenyNonTLSAccess
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt Tenant3Bucket.Arn
+              - !Sub "${Tenant3Bucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+          # Deny uploads without encryption header
+          - Sid: DenyUnencryptedUploads
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:PutObject"
+            Resource:
+              - !Sub "${Tenant3Bucket.Arn}/*"
+            Condition:
+              "Null":
+                s3:x-amz-server-side-encryption: "true"
+
+          # Deny uploads using encryption other than SSE-KMS
+          - Sid: DenyIncorrectEncryption
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:PutObject"
+            Resource:
+              - !Sub "${Tenant3Bucket.Arn}/*"
+            Condition:
+              StringNotEquals:
+                s3:x-amz-server-side-encryption: "aws:kms"
 
   FolderCreatorFunction:
     Type: AWS::Lambda::Function
@@ -116,7 +255,9 @@ Resources:
                               s3.put_object(
                                   Bucket=bucket,
                                   Key=folder,
-                                  Body=b""
+                                  Body=b"",
+                                  ServerSideEncryption="aws:kms",
+                                  SSEKMSKeyId=event["ResourceProperties"]["KMSKeyArn"]
                               )
 
                   send_response(event, context, "SUCCESS")
@@ -131,12 +272,250 @@ Resources:
 
   TenantFolders:
     Type: Custom::TenantFolders
+    DependsOn:
+      - Tenant1BucketPolicy
+      - Tenant2BucketPolicy
+      - Tenant3BucketPolicy
     Properties:
       ServiceToken: !GetAtt FolderCreatorFunction.Arn
+      ServiceTimeout: 120
+      KMSKeyArn: !Ref KMSKeyArn
       Buckets:
         - !Ref Tenant1Bucket
         - !Ref Tenant2Bucket
         - !Ref Tenant3Bucket
+
+  RawCSVUploadRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${AWS::StackName}-raw-csv-upload"
+      Description: "Automatically trigger PII scanning for all three tenants"
+      State: ENABLED
+
+      EventPattern:
+        source:
+          - aws.s3
+        detail-type:
+          - "Object Created"
+        detail:
+          bucket:
+            name:
+              - !Ref Tenant1Bucket
+              - !Ref Tenant2Bucket
+              - !Ref Tenant3Bucket
+          object:
+            key:
+              - wildcard: "raw/*.csv"
+
+      Targets:
+        - Id: PIIWorkflowTarget
+          Arn: !Ref PIIWorkflow
+          RoleArn: !Ref LabRoleArn
+
+          InputTransformer:
+            InputPathsMap:
+              bucket: "$.detail.bucket.name"
+              key: "$.detail.object.key"
+            InputTemplate: '{"bucket": <bucket>, "key": <key>}'
+
+  PIIAlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${AWS::StackName}-pii-alerts'
+
+  PIIAlertSubscription1:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlertEmail1
+    Properties:
+      Protocol: email
+      Endpoint: !Ref AlertEmail1
+      TopicArn: !Ref PIIAlertTopic
+
+  PIIScannerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-pii-scanner'
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !Ref LabRoleArn
+      Timeout: 120
+      MemorySize: 256
+      Environment:
+        Variables:
+          KMS_KEY_ARN: !Ref KMSKeyArn
+          ALLOWED_BUCKETS: !Join [',', [!Ref Tenant1Bucket, !Ref Tenant2Bucket, !Ref Tenant3Bucket]]
+      Code:
+        ZipFile: |
+          import boto3
+          import csv
+          import io
+          import os
+          import re
+          from pathlib import PurePosixPath
+
+          s3 = boto3.client('s3')
+          GRADING_COLUMN = '_seeded_pii_for_grading_only'
+          PATTERNS = {
+              'email': r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b',
+              'sin_like': r'\b\d{3}[- ]?\d{3}[- ]?\d{3}\b',
+              'health_card': r'\b\d{4}-\d{3}-\d{3}\s[A-Za-z]{2}\b',
+              'phone': r'\b(?:\+?1[-.\s]?)?\(?[2-9]\d{2}\)?[-.\s]?[2-9]\d{2}[-.\s]?\d{4}\b'
+          }
+
+          def detect_pii(notes):
+              return [name for name, pattern in PATTERNS.items()
+                      if re.search(pattern, str(notes or ''), re.IGNORECASE)]
+
+          def upload_csv(bucket, key, rows, fieldnames, kms_key_arn):
+              output = io.StringIO()
+              writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction='ignore')
+              writer.writeheader()
+              writer.writerows(rows)
+              s3.put_object(
+                  Bucket=bucket, Key=key,
+                  Body=output.getvalue().encode('utf-8'),
+                  ContentType='text/csv',
+                  ServerSideEncryption='aws:kms',
+                  SSEKMSKeyId=kms_key_arn
+              )
+
+          def lambda_handler(event, context):
+              bucket = event['bucket']
+              key = event['key']
+              allowed = set(os.environ['ALLOWED_BUCKETS'].split(','))
+              if bucket not in allowed:
+                  raise ValueError('Bucket not part of this deployment')
+              if not key.startswith('raw/') or not key.lower().endswith('.csv'):
+                  raise ValueError('Input must be a CSV inside raw/')
+              kms_key_arn = os.environ['KMS_KEY_ARN']
+              response = s3.get_object(Bucket=bucket, Key=key)
+              reader = csv.DictReader(io.StringIO(response['Body'].read().decode('utf-8-sig')))
+              if not reader.fieldnames or 'notes_field' not in reader.fieldnames:
+                  raise ValueError('CSV must contain notes_field')
+              fieldnames = [f for f in reader.fieldnames if f != GRADING_COLUMN]
+              clean_rows, flagged_rows, findings = [], [], []
+              for row in reader:
+                  matches = detect_pii(row.get('notes_field'))
+                  row.pop(GRADING_COLUMN, None)
+                  if matches:
+                      flagged_rows.append(row)
+                      findings.append({'encounter_id': row.get('encounter_id'), 'patterns': matches})
+                  else:
+                      clean_rows.append(row)
+              stem = PurePosixPath(key).name[:-4]
+              clean_key = f'curated/{stem}_clean.csv'
+              quarantine_key = f'quarantine/{stem}_flagged.csv'
+              # Always overwrite both outputs so stale data is not left behind.
+              upload_csv(bucket, clean_key, clean_rows, fieldnames, kms_key_arn)
+              upload_csv(bucket, quarantine_key, flagged_rows, fieldnames, kms_key_arn)
+              return {
+                  'bucket': bucket,
+                  'source_key': key,
+                  'status': 'flagged' if flagged_rows else 'clean',
+                  'total_rows': len(clean_rows) + len(flagged_rows),
+                  'clean_count': len(clean_rows),
+                  'flagged_count': len(flagged_rows),
+                  'clean_key': clean_key,
+                  'quarantine_key': quarantine_key,
+                  'findings': findings[:100]
+              }
+
+  PIIWorkflow:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub '${AWS::StackName}-pii-workflow'
+      StateMachineType: STANDARD
+      RoleArn: !Ref LabRoleArn
+      Definition:
+        Comment: Scan S3 raw CSV, split rows, alert on flagged records
+        StartAt: ScanClinicData
+        States:
+          ScanClinicData:
+            Type: Task
+            Resource: arn:aws:states:::lambda:invoke
+            Parameters:
+              FunctionName: !GetAtt PIIScannerFunction.Arn
+              Payload:
+                bucket.$: '$.bucket'
+                key.$: '$.key'
+            ResultSelector:
+              bucket.$: '$.Payload.bucket'
+              source_key.$: '$.Payload.source_key'
+              total_rows.$: '$.Payload.total_rows'
+              clean_count.$: '$.Payload.clean_count'
+              flagged_count.$: '$.Payload.flagged_count'
+              clean_key.$: '$.Payload.clean_key'
+              quarantine_key.$: '$.Payload.quarantine_key'
+            ResultPath: '$.scan_result'
+            Next: CheckFlaggedRecords
+          CheckFlaggedRecords:
+            Type: Choice
+            Choices:
+              - Variable: '$.scan_result.flagged_count'
+                NumericGreaterThan: 0
+                Next: SendSNSAlert
+            Default: ProcessingSucceeded
+          SendSNSAlert:
+            Type: Task
+            Resource: arn:aws:states:::sns:publish
+            Parameters:
+              TopicArn: !Ref PIIAlertTopic
+              Subject: Marrowick Health Analytics - PII Alert
+              Message.$: "States.Format('PII/PHI scan alert. Bucket: {}. Source: {}. Total rows: {}. Flagged rows: {}. Quarantine file: {}.', $.scan_result.bucket, $.scan_result.source_key, $.scan_result.total_rows, $.scan_result.flagged_count, $.scan_result.quarantine_key)"
+            Next: ProcessingSucceeded
+          ProcessingSucceeded:
+            Type: Succeed
+
+  HealthCatalogDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Sub '${AWS::StackName}-health-db'
+        Description: Curated synthetic healthcare encounter tables
+
+  Tenant1CuratedCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: !Sub '${AWS::StackName}-tenant1-crawler'
+      Role: !Ref LabRoleArn
+      DatabaseName: !Ref HealthCatalogDatabase
+      TablePrefix: tenant1_
+      Targets:
+        S3Targets:
+          - Path: !Sub 's3://${Tenant1Bucket}/curated/'
+            Exclusions: ['**/*_flagged.csv']
+      SchemaChangePolicy:
+        UpdateBehavior: UPDATE_IN_DATABASE
+        DeleteBehavior: LOG
+  Tenant2CuratedCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: !Sub '${AWS::StackName}-tenant2-crawler'
+      Role: !Ref LabRoleArn
+      DatabaseName: !Ref HealthCatalogDatabase
+      TablePrefix: tenant2_
+      Targets:
+        S3Targets:
+          - Path: !Sub 's3://${Tenant2Bucket}/curated/'
+            Exclusions: ['**/*_flagged.csv']
+      SchemaChangePolicy:
+        UpdateBehavior: UPDATE_IN_DATABASE
+        DeleteBehavior: LOG
+  Tenant3CuratedCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: !Sub '${AWS::StackName}-tenant3-crawler'
+      Role: !Ref LabRoleArn
+      DatabaseName: !Ref HealthCatalogDatabase
+      TablePrefix: tenant3_
+      Targets:
+        S3Targets:
+          - Path: !Sub 's3://${Tenant3Bucket}/curated/'
+            Exclusions: ['**/*_flagged.csv']
+      SchemaChangePolicy:
+        UpdateBehavior: UPDATE_IN_DATABASE
+        DeleteBehavior: LOG
 
 Outputs:
   Tenant1BucketName:
@@ -150,5 +529,18 @@ Outputs:
   Tenant3BucketName:
     Description: Tenant 3 bucket
     Value: !Ref Tenant3Bucket
+
+  ScannerLambdaArn:
+    Value: !GetAtt PIIScannerFunction.Arn
+  AlertTopicArn:
+    Value: !Ref PIIAlertTopic
+  PIIWorkflowArn:
+    Value: !Ref PIIWorkflow
+  GlueDatabaseName:
+    Value: !Ref HealthCatalogDatabase
+
+  RawCSVUploadRuleArn:
+    Description: EventBridge rule that triggers PII scanning for uploaded raw CSVs
+    Value: !GetAtt RawCSVUploadRule.Arn
 
   
