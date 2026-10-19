@@ -1,0 +1,34 @@
+
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ListCuratedClinicData",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": [
+        "arn:aws:s3:::marrowick-maha-5506-652122431950-tenant1",
+        "arn:aws:s3:::marrowick-maha-5506-652122431950-tenant2",
+        "arn:aws:s3:::marrowick-maha-5506-652122431950-tenant3"
+      ],
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": [
+            "curated",
+            "curated/*"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "ReadCuratedClinicData",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": [
+        "arn:aws:s3:::marrowick-maha-5506-652122431950-tenant1/curated/*",
+        "arn:aws:s3:::marrowick-maha-5506-652122431950-tenant2/curated/*",
+        "arn:aws:s3:::marrowick-maha-5506-652122431950-tenant3/curated/*"
+      ]
+    }
+  ]
+}
