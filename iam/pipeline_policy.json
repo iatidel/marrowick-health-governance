@@ -1,0 +1,29 @@
+
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadRawClinicData",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": [
+        "arn:aws:s3:::marrowick-maha-5506-652122431950-tenant1/raw/*",
+        "arn:aws:s3:::marrowick-maha-5506-652122431950-tenant2/raw/*",
+        "arn:aws:s3:::marrowick-maha-5506-652122431950-tenant3/raw/*"
+      ]
+    },
+    {
+      "Sid": "WriteProcessedClinicData",
+      "Effect": "Allow",
+      "Action": "s3:PutObject",
+      "Resource": [
+        "arn:aws:s3:::marrowick-maha-5506-652122431950-tenant1/curated/*",
+        "arn:aws:s3:::marrowick-maha-5506-652122431950-tenant1/quarantine/*",
+        "arn:aws:s3:::marrowick-maha-5506-652122431950-tenant2/curated/*",
+        "arn:aws:s3:::marrowick-maha-5506-652122431950-tenant2/quarantine/*",
+        "arn:aws:s3:::marrowick-maha-5506-652122431950-tenant3/curated/*",
+        "arn:aws:s3:::marrowick-maha-5506-652122431950-tenant3/quarantine/*"
+      ]
+    }
+  ]
+}
