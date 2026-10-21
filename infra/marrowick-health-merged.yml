@@ -1,0 +1,910 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Marrowick Health Analytics - Multi-tenant S3 + KMS + PII gate (Step Functions/Lambda/SNS) + Glue catalog + CloudTrail audit + Athena audit queries (no Lake Formation)'
+
+# ============================================================
+# PARAMETERS  (things YOU type in when you create the stack)
+# ============================================================
+Parameters:
+  # PURPOSE: start of every bucket name (marrowickh-tenant1, ...). S3 names are global, so change it if the name is taken.
+  BucketPrefix:
+    Type: String
+    Default: marrowickh
+    Description: Prefix for all bucket names (lowercase letters, numbers, hyphens only)
+
+  # PURPOSE: the customer-managed KMS key the team created. Every tenant bucket and the Athena results bucket use it for encryption.
+  KMSKeyArn:
+    Type: String
+    Description: ARN of your existing customer-managed KMS key
+
+  # PURPOSE: the ONLY role the Learner Lab allows. Lambda, Step Functions, EventBridge and Glue all run as this role.
+  LabRoleArn:
+    Type: String
+    Description: ARN of the AWS Academy LabRole
+
+  # PURPOSE: email that receives the PII-gate alerts from SNS. You must click the confirmation link in the email.
+  AlertEmail1:
+    Type: String
+    Default: ''
+    Description: Optional SNS subscriber email 1
+
+
+
+  # PURPOSE: Glue database that holds the curated tenant tables (used later by Lake Formation and Athena). Underscores only, no hyphens.
+  HealthDatabaseName:
+    Type: String
+    Default: marrowick_health
+    Description: Glue database for curated tenant tables (underscores only, no hyphens)
+
+  # PURPOSE: Glue/Athena database for the CloudTrail audit table and queries.
+  AuditDatabaseName:
+    Type: String
+    Default: marrowick_audit
+    Description: Glue/Athena database for audit queries (change it if one with this name already exists)
+
+  # PURPOSE: name of the CloudTrail trail. Must match the bucket policy of the logs bucket.
+  TrailName:
+    Type: String
+    Default: marrowick-audit-trail
+    Description: CloudTrail trail name (change it if one with this name already exists)
+
+  # PURPOSE: first day Athena looks at in the CloudTrail logs (keeps audit queries small and cheap).
+  AuditStartDate:
+    Type: String
+    Default: '2026/10/01'
+    Description: First date (yyyy/MM/dd) Athena should look at in CloudTrail logs
+
+  # CONDITIONS: only create the SNS email subscription if an email was typed in.
+Conditions:
+  HasAlertEmail1: !Not [!Equals [!Ref AlertEmail1, '']]
+
+Resources:
+  # ============================================================
+  # PART 1 - TENANT BUCKETS (KMS encrypted + bucket policies)
+  # ============================================================
+  # PART 1 - TENANT 1 BUCKET (Clinic 1)
+  # PURPOSE: one private bucket per clinic = physical tenant separation.
+  #  - default encryption: SSE-KMS with our own key
+  #  - public access fully blocked
+  #  - EventBridge ON so an upload can start the PII gate automatically
+  Tenant1Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${BucketPrefix}-tenant1'
+      NotificationConfiguration:
+        EventBridgeConfiguration:
+          EventBridgeEnabled: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref KMSKeyArn
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # TENANT 1 BUCKET POLICY - three DENY rules (guardrails):
+  #  1) deny any non-HTTPS access  2) deny uploads with no encryption header
+  #  3) deny uploads that are not encrypted with KMS
+  Tenant1BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Tenant1Bucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyNonTLSAccess
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt Tenant1Bucket.Arn
+              - !Sub "${Tenant1Bucket.Arn}/*"
+            Condition:
+              Bool:
+                "aws:SecureTransport": "false"
+          - Sid: DenyUnencryptedUploads
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:PutObject"
+            Resource:
+              - !Sub "${Tenant1Bucket.Arn}/*"
+            Condition:
+              "Null":
+                "s3:x-amz-server-side-encryption": "true"
+          - Sid: DenyIncorrectEncryption
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:PutObject"
+            Resource:
+              - !Sub "${Tenant1Bucket.Arn}/*"
+            Condition:
+              StringNotEquals:
+                "s3:x-amz-server-side-encryption": "aws:kms"
+
+  # TENANT 2 BUCKET (Clinic 2) - same settings as tenant 1, separate bucket.
+  Tenant2Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${BucketPrefix}-tenant2'
+      NotificationConfiguration:
+        EventBridgeConfiguration:
+          EventBridgeEnabled: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref KMSKeyArn
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # TENANT 2 BUCKET POLICY - same 3 deny rules (HTTPS only, encryption required, KMS only).
+  Tenant2BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Tenant2Bucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyNonTLSAccess
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt Tenant2Bucket.Arn
+              - !Sub "${Tenant2Bucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+          - Sid: DenyUnencryptedUploads
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:PutObject"
+            Resource:
+              - !Sub "${Tenant2Bucket.Arn}/*"
+            Condition:
+              "Null":
+                s3:x-amz-server-side-encryption: "true"
+          - Sid: DenyIncorrectEncryption
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:PutObject"
+            Resource:
+              - !Sub "${Tenant2Bucket.Arn}/*"
+            Condition:
+              StringNotEquals:
+                s3:x-amz-server-side-encryption: "aws:kms"
+
+  # TENANT 3 BUCKET (Clinic 3) - same settings as tenant 1, separate bucket.
+  Tenant3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${BucketPrefix}-tenant3'
+      NotificationConfiguration:
+        EventBridgeConfiguration:
+          EventBridgeEnabled: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref KMSKeyArn
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # TENANT 3 BUCKET POLICY - same 3 deny rules (HTTPS only, encryption required, KMS only).
+  Tenant3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Tenant3Bucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyNonTLSAccess
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt Tenant3Bucket.Arn
+              - !Sub "${Tenant3Bucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+          - Sid: DenyUnencryptedUploads
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:PutObject"
+            Resource:
+              - !Sub "${Tenant3Bucket.Arn}/*"
+            Condition:
+              "Null":
+                s3:x-amz-server-side-encryption: "true"
+          - Sid: DenyIncorrectEncryption
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:PutObject"
+            Resource:
+              - !Sub "${Tenant3Bucket.Arn}/*"
+            Condition:
+              StringNotEquals:
+                s3:x-amz-server-side-encryption: "aws:kms"
+
+  # ============================================================
+  # PART 2 - CREATE raw/ curated/ quarantine/ FOLDERS
+  # ============================================================
+  # PART 2 - FOLDER CREATOR (runs once at deployment)
+  # PURPOSE: small Lambda that creates the empty folders raw/, curated/ and quarantine/
+  # inside each tenant bucket (encrypted with KMS, so the bucket policy accepts it).
+  FolderCreatorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${BucketPrefix}-folder-creator'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !Ref LabRoleArn
+      Timeout: 120
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import urllib.request
+
+          s3 = boto3.client("s3")
+
+          def send_response(event, context, status, reason="OK"):
+              response = {
+                  "Status": status,
+                  "Reason": str(reason)[:1000],
+                  "PhysicalResourceId": "abc-health-folder-markers",
+                  "StackId": event["StackId"],
+                  "RequestId": event["RequestId"],
+                  "LogicalResourceId": event["LogicalResourceId"],
+                  "Data": {}
+              }
+              body = json.dumps(response).encode("utf-8")
+              request = urllib.request.Request(
+                  event["ResponseURL"],
+                  data=body,
+                  headers={"content-type": ""},
+                  method="PUT"
+              )
+              urllib.request.urlopen(request, timeout=20).read()
+
+          def handler(event, context):
+              try:
+                  if event["RequestType"] in ("Create", "Update"):
+                      buckets = event["ResourceProperties"]["Buckets"]
+                      for bucket in buckets:
+                          for folder in ("raw/", "quarantine/", "curated/"):
+                              s3.put_object(
+                                  Bucket=bucket,
+                                  Key=folder,
+                                  Body=b"",
+                                  ServerSideEncryption="aws:kms",
+                                  SSEKMSKeyId=event["ResourceProperties"]["KMSKeyArn"]
+                              )
+                  send_response(event, context, "SUCCESS")
+              except Exception as error:
+                  send_response(event, context, "FAILED", str(error))
+
+  # PURPOSE: triggers the folder-creator Lambda for the 3 tenant buckets, after their policies exist.
+  TenantFolders:
+    Type: Custom::TenantFolders
+    DependsOn:
+      - Tenant1BucketPolicy
+      - Tenant2BucketPolicy
+      - Tenant3BucketPolicy
+    Properties:
+      ServiceToken: !GetAtt FolderCreatorFunction.Arn
+      ServiceTimeout: 120
+      KMSKeyArn: !Ref KMSKeyArn
+      Buckets:
+        - !Ref Tenant1Bucket
+        - !Ref Tenant2Bucket
+        - !Ref Tenant3Bucket
+
+  # ============================================================
+  # PART 3 - PII GATE (EventBridge -> Step Functions -> Lambda -> SNS)
+  # ============================================================
+  # PART 3 - PII GATE (EventBridge -> Step Functions -> Lambda -> SNS)
+  # EVENTBRIDGE RULE - the automatic trigger.
+  # PURPOSE: when a .csv file is uploaded into raw/ of ANY tenant bucket, start the Step Functions
+  # workflow and pass it the bucket name and file key. (curated/ and quarantine/ do not trigger it.)
+  RawCSVUploadRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${AWS::StackName}-raw-csv-upload"
+      Description: "Automatically trigger PII scanning for all three tenants"
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.s3
+        detail-type:
+          - "Object Created"
+        detail:
+          bucket:
+            name:
+              - !Ref Tenant1Bucket
+              - !Ref Tenant2Bucket
+              - !Ref Tenant3Bucket
+          object:
+            key:
+              - wildcard: "raw/*.csv"
+      Targets:
+        - Id: PIIWorkflowTarget
+          Arn: !Ref PIIWorkflow
+          RoleArn: !Ref LabRoleArn
+          InputTransformer:
+            InputPathsMap:
+              bucket: "$.detail.bucket.name"
+              key: "$.detail.object.key"
+            InputTemplate: '{"bucket": <bucket>, "key": <key>}'
+
+  # SNS TOPIC - the 'mailbox' that the gate publishes alerts to (PII found, or pipeline failure).
+  PIIAlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${AWS::StackName}-pii-alerts'
+
+  # SNS EMAIL SUBSCRIPTION - sends the alerts to the email typed in AlertEmail1 (only if one was given).
+  PIIAlertSubscription1:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlertEmail1
+    Properties:
+      Protocol: email
+      Endpoint: !Ref AlertEmail1
+      TopicArn: !Ref PIIAlertTopic
+
+  # PII SCANNER LAMBDA - the actual detector.
+  # PURPOSE: reads the uploaded CSV and checks EVERY column of EVERY row against regex patterns
+  # (name, street address, city/province, email, health card, SIN-like, phone).
+  #  - clean rows   -> curated/<file>_clean.csv
+  #  - flagged rows -> quarantine/<file>_flagged.csv
+  # Returns counts to Step Functions. Files are saved with SSE-KMS (the bucket policy requires it).
+  PIIScannerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-pii-scanner'
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !Ref LabRoleArn
+      Timeout: 120
+      MemorySize: 256
+      Environment:
+        Variables:
+          KMS_KEY_ARN: !Ref KMSKeyArn
+          ALLOWED_BUCKETS: !Join [',', [!Ref Tenant1Bucket, !Ref Tenant2Bucket, !Ref Tenant3Bucket]]
+      Code:
+        ZipFile: |
+          import boto3
+          import csv
+          import io
+          import os
+          import re
+          from pathlib import PurePosixPath
+
+          s3 = boto3.client('s3')
+
+          # Optional grading column: never scanned, never copied to curated/quarantine.
+          GRADING_COLUMN = '_seeded_pii_for_grading_only'
+
+          PATTERNS = {
+              'name': re.compile(r"(?:Contact|Patient|Name)\s*:\s*[A-Z][a-z]+\s+[A-Z][a-z'-]+"),
+              'street_address': re.compile(
+                  r"\b\d{1,5}\s+[A-Z][a-z]+(?:\s[A-Z][a-z]+)?\s"
+                  r"(?:Ave|Avenue|St|Street|Rd|Road|Blvd|Dr|Drive|Ln|Lane|Ct|Court|Way)\b"
+              ),
+              'city_province': re.compile(
+                  r"\b[A-Z][a-z]+,\s?(?:ON|QC|BC|AB|MB|SK|NS|NB|NL|PE)\b"
+              ),
+              'email': re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+"),
+              'health_card': re.compile(r"\b\d{4}-\d{3}-\d{3}(?:\s?[A-Z]{2})?\b"),
+              'sin_like': re.compile(r"\b\d{3}-\d{3}-\d{3}\b"),
+              'phone': re.compile(r"\(?\b\d{3}\)?[-. ]\d{3}[-. ]\d{4}\b"),
+          }
+
+          def find_pii(row):
+              """Check EVERY column of the row. Return the sorted list of pattern names found."""
+              found = set()
+              for column, value in row.items():
+                  if column == GRADING_COLUMN:
+                      continue
+                  text = str(value or '')
+                  for name, rx in PATTERNS.items():
+                      if rx.search(text):
+                          found.add(name)
+              return sorted(found)
+
+          def save_or_clear(bucket, key, rows, fieldnames, kms_key_arn):
+              """Write rows as CSV (SSE-KMS, required by the bucket policy).
+              If there are no rows, delete any old file so stale data is not left behind."""
+              if not rows:
+                  s3.delete_object(Bucket=bucket, Key=key)
+                  return
+              output = io.StringIO()
+              writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction='ignore')
+              writer.writeheader()
+              writer.writerows(rows)
+              s3.put_object(
+                  Bucket=bucket, Key=key,
+                  Body=output.getvalue().encode('utf-8'),
+                  ContentType='text/csv',
+                  ServerSideEncryption='aws:kms',
+                  SSEKMSKeyId=kms_key_arn
+              )
+
+          def lambda_handler(event, context):
+              bucket = event['bucket']
+              key = event['key']
+              allowed = set(os.environ['ALLOWED_BUCKETS'].split(','))
+              if bucket not in allowed:
+                  raise ValueError('Bucket not part of this deployment')
+              if not key.startswith('raw/') or not key.lower().endswith('.csv'):
+                  raise ValueError('Input must be a CSV inside raw/')
+              kms_key_arn = os.environ['KMS_KEY_ARN']
+
+              body = s3.get_object(Bucket=bucket, Key=key)['Body'].read().decode('utf-8-sig')
+              reader = csv.DictReader(io.StringIO(body))
+              if not reader.fieldnames:
+                  raise ValueError('CSV has no header row')
+              fieldnames = [f for f in reader.fieldnames if f != GRADING_COLUMN]
+
+              clean_rows, flagged_rows, findings = [], [], []
+              for row in reader:
+                  matches = find_pii(row)
+                  row.pop(GRADING_COLUMN, None)
+                  if matches:
+                      flagged_rows.append(row)
+                      findings.append({'encounter_id': row.get('encounter_id'), 'patterns': matches})
+                  else:
+                      clean_rows.append(row)
+
+              stem = PurePosixPath(key).name[:-4]
+              clean_key = f'curated/{stem}_clean.csv'
+              quarantine_key = f'quarantine/{stem}_flagged.csv'
+              save_or_clear(bucket, clean_key, clean_rows, fieldnames, kms_key_arn)
+              save_or_clear(bucket, quarantine_key, flagged_rows, fieldnames, kms_key_arn)
+
+              # Key names below must match the Step Functions ResultSelector - do not rename.
+              return {
+                  'bucket': bucket,
+                  'source_key': key,
+                  'status': 'flagged' if flagged_rows else 'clean',
+                  'total_rows': len(clean_rows) + len(flagged_rows),
+                  'clean_count': len(clean_rows),
+                  'flagged_count': len(flagged_rows),
+                  'clean_key': clean_key,
+                  'quarantine_key': quarantine_key,
+                  'findings': findings[:100]
+              }
+
+  # STEP FUNCTIONS WORKFLOW - the 'quarantine-and-notify' gate.
+  # Flow: ScanClinicData (run Lambda) -> CheckFlaggedRecords (any flagged rows?)
+  #    yes -> SendSNSAlert (email) -> Succeed      no -> Succeed
+  #    Lambda crashed -> SendFailureAlert (email) -> Fail
+  PIIWorkflow:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub '${AWS::StackName}-pii-workflow'
+      StateMachineType: STANDARD
+      RoleArn: !Ref LabRoleArn
+      Definition:
+        Comment: Scan S3 raw CSV, split rows, alert on flagged records
+        StartAt: ScanClinicData
+        States:
+          ScanClinicData:
+            Type: Task
+            Resource: arn:aws:states:::lambda:invoke
+            Parameters:
+              FunctionName: !GetAtt PIIScannerFunction.Arn
+              Payload:
+                bucket.$: '$.bucket'
+                key.$: '$.key'
+            ResultSelector:
+              bucket.$: '$.Payload.bucket'
+              source_key.$: '$.Payload.source_key'
+              total_rows.$: '$.Payload.total_rows'
+              clean_count.$: '$.Payload.clean_count'
+              flagged_count.$: '$.Payload.flagged_count'
+              clean_key.$: '$.Payload.clean_key'
+              quarantine_key.$: '$.Payload.quarantine_key'
+            ResultPath: '$.scan_result'
+            Catch:
+              - ErrorEquals: ['States.ALL']
+                ResultPath: '$.error'
+                Next: SendFailureAlert
+            Next: CheckFlaggedRecords
+          CheckFlaggedRecords:
+            Type: Choice
+            Choices:
+              - Variable: '$.scan_result.flagged_count'
+                NumericGreaterThan: 0
+                Next: SendSNSAlert
+            Default: ProcessingSucceeded
+          SendSNSAlert:
+            Type: Task
+            Resource: arn:aws:states:::sns:publish
+            Parameters:
+              TopicArn: !Ref PIIAlertTopic
+              Subject: Marrowick Health Analytics - PII Alert
+              Message.$: "States.Format('PII/PHI scan alert. Bucket: {}. Source: {}. Total rows: {}. Flagged rows: {}. Quarantine file: {}.', $.scan_result.bucket, $.scan_result.source_key, $.scan_result.total_rows, $.scan_result.flagged_count, $.scan_result.quarantine_key)"
+            Next: ProcessingSucceeded
+          SendFailureAlert:
+            Type: Task
+            Resource: arn:aws:states:::sns:publish
+            Parameters:
+              TopicArn: !Ref PIIAlertTopic
+              Subject: Marrowick Health Analytics - PIPELINE FAILURE
+              Message.$: "States.Format('Pipeline failure while scanning s3://{}/{}. Error: {}', $.bucket, $.key, $.error.Error)"
+            Next: PipelineFailed
+          PipelineFailed:
+            Type: Fail
+            Error: ScanFailed
+            Cause: Scanner Lambda failed. See the SNS alert and CloudWatch logs.
+          ProcessingSucceeded:
+            Type: Succeed
+
+  # PART 4 - GLUE CATALOG
+  # GLUE DATABASE - the catalog 'folder' that will contain the 3 curated tenant tables.
+  # Lake Formation permissions (your part) are applied on this database and its tables.
+  HealthCatalogDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Ref HealthDatabaseName
+        Description: Curated synthetic healthcare encounter tables
+
+  # GLUE CRAWLERS - one per tenant. PURPOSE: read ONLY curated/ (never raw/ or quarantine/),
+  # detect the columns, and create a table (tenant1_curated). Run it manually after clean data lands.
+  Tenant1CuratedCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: !Sub '${AWS::StackName}-tenant1-crawler'
+      Role: !Ref LabRoleArn
+      DatabaseName: !Ref HealthCatalogDatabase
+      TablePrefix: tenant1_
+      Targets:
+        S3Targets:
+          - Path: !Sub 's3://${Tenant1Bucket}/curated/'
+            Exclusions: ['**/*_flagged.csv']
+      SchemaChangePolicy:
+        UpdateBehavior: UPDATE_IN_DATABASE
+        DeleteBehavior: LOG
+
+  # CRAWLER TENANT 2 - creates table tenant2_curated from s3://<tenant2 bucket>/curated/.
+  Tenant2CuratedCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: !Sub '${AWS::StackName}-tenant2-crawler'
+      Role: !Ref LabRoleArn
+      DatabaseName: !Ref HealthCatalogDatabase
+      TablePrefix: tenant2_
+      Targets:
+        S3Targets:
+          - Path: !Sub 's3://${Tenant2Bucket}/curated/'
+            Exclusions: ['**/*_flagged.csv']
+      SchemaChangePolicy:
+        UpdateBehavior: UPDATE_IN_DATABASE
+        DeleteBehavior: LOG
+
+  # CRAWLER TENANT 3 - creates table tenant3_curated from s3://<tenant3 bucket>/curated/.
+  Tenant3CuratedCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: !Sub '${AWS::StackName}-tenant3-crawler'
+      Role: !Ref LabRoleArn
+      DatabaseName: !Ref HealthCatalogDatabase
+      TablePrefix: tenant3_
+      Targets:
+        S3Targets:
+          - Path: !Sub 's3://${Tenant3Bucket}/curated/'
+            Exclusions: ['**/*_flagged.csv']
+      SchemaChangePolicy:
+        UpdateBehavior: UPDATE_IN_DATABASE
+        DeleteBehavior: LOG
+
+  # ============================================================
+  # PART 5 - CLOUDTRAIL AUDIT (logs bucket + trail)
+  # ============================================================
+  # PART 5 - CLOUDTRAIL AUDIT
+  # CLOUDTRAIL LOGS BUCKET - where the audit logs are stored. Kept (Retain) even if the stack is deleted,
+  # so the evidence is not lost. Uses AES256 because CloudTrail cannot write with our KMS key without extra key edits.
+  CloudTrailLogsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub '${BucketPrefix}-cloudtrail-logs-${AWS::AccountId}'
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      # AES256 on purpose: CloudTrail needs extra KMS key-policy edits to write with a CMK.
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # LOGS BUCKET POLICY - lets ONLY our CloudTrail trail write logs into the bucket, and denies non-HTTPS access.
+  CloudTrailLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CloudTrailLogsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AWSCloudTrailAclCheck
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt CloudTrailLogsBucket.Arn
+            Condition:
+              StringEquals:
+                'aws:SourceArn': !Sub 'arn:aws:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/${TrailName}'
+          - Sid: AWSCloudTrailWrite
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${CloudTrailLogsBucket.Arn}/AWSLogs/${AWS::AccountId}/*'
+            Condition:
+              StringEquals:
+                's3:x-amz-acl': 'bucket-owner-full-control'
+                'aws:SourceArn': !Sub 'arn:aws:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/${TrailName}'
+          - Sid: DenyNonTLSAccess
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt CloudTrailLogsBucket.Arn
+              - !Sub '${CloudTrailLogsBucket.Arn}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
+
+  # CLOUDTRAIL TRAIL - records (1) all management API calls (bucket policy changes, Lake Formation grants, etc.)
+  # and (2) object-level S3 data events (who read/wrote files) on the 3 tenant buckets.
+  AuditTrail:
+    Type: AWS::CloudTrail::Trail
+    DependsOn: CloudTrailLogsBucketPolicy
+    Properties:
+      TrailName: !Ref TrailName
+      S3BucketName: !Ref CloudTrailLogsBucket
+      IsLogging: true
+      IsMultiRegionTrail: true
+      IncludeGlobalServiceEvents: true
+      EnableLogFileValidation: true
+      IsOrganizationTrail: false
+      AdvancedEventSelectors:
+        - Name: Management events selector
+          FieldSelectors:
+            - Field: eventCategory
+              Equals:
+                - Management
+        - Name: S3 data events for the 3 tenant buckets
+          FieldSelectors:
+            - Field: eventCategory
+              Equals:
+                - Data
+            - Field: resources.type
+              Equals:
+                - AWS::S3::Object
+            - Field: resources.ARN
+              StartsWith:
+                - !Sub '${Tenant1Bucket.Arn}/'
+                - !Sub '${Tenant2Bucket.Arn}/'
+                - !Sub '${Tenant3Bucket.Arn}/'
+
+  # ============================================================
+  # PART 6 - ATHENA AUDIT (database + workgroup + saved queries)
+  # ============================================================
+  # PART 6 - ATHENA AUDIT
+  # AUDIT DATABASE - Glue database for the CloudTrail table that Athena queries.
+  AuditDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Ref AuditDatabaseName
+        Description: CloudTrail audit tables queried with Athena
+
+  # ATHENA RESULTS BUCKET - Athena saves query outputs here, encrypted with our KMS key.
+  AthenaResultsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${BucketPrefix}-athena-results-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref KMSKeyArn
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # ATHENA WORKGROUP - forces audit queries to save results in the encrypted results bucket.
+  AuditWorkGroup:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: !Sub '${BucketPrefix}-audit-wg'
+      Description: Workgroup for audit queries (results encrypted with the KMS key)
+      State: ENABLED
+      WorkGroupConfiguration:
+        EnforceWorkGroupConfiguration: true
+        PublishCloudWatchMetricsEnabled: true
+        ResultConfiguration:
+          OutputLocation: !Sub 's3://${AthenaResultsBucket}/audit-results/'
+          EncryptionConfiguration:
+            EncryptionOption: SSE_KMS
+            KmsKey: !Ref KMSKeyArn
+
+  # Run this one FIRST in Athena: it creates the table that reads the CloudTrail logs.
+  # SAVED QUERY 0 - RUN FIRST. Creates the cloudtrail_logs table over the log files.
+  # Uses partition projection (by date) so no crawler is needed.
+  Query0CreateCloudTrailTable:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Name: '00 - Create cloudtrail_logs table (run first)'
+      Description: Creates the CloudTrail table with partition projection (no crawler needed)
+      Database: !Ref AuditDatabase
+      WorkGroup: !Ref AuditWorkGroup
+      QueryString: !Sub |
+        CREATE EXTERNAL TABLE IF NOT EXISTS cloudtrail_logs (
+          eventversion STRING,
+          useridentity STRUCT<type:STRING, principalid:STRING, arn:STRING, accountid:STRING, invokedby:STRING, accesskeyid:STRING, username:STRING, sessioncontext:STRUCT<attributes:STRUCT<mfaauthenticated:STRING, creationdate:STRING>, sessionissuer:STRUCT<type:STRING, principalid:STRING, arn:STRING, accountid:STRING, username:STRING>>>,
+          eventtime STRING,
+          eventsource STRING,
+          eventname STRING,
+          awsregion STRING,
+          sourceipaddress STRING,
+          useragent STRING,
+          errorcode STRING,
+          errormessage STRING,
+          requestparameters STRING,
+          responseelements STRING,
+          additionaleventdata STRING,
+          requestid STRING,
+          eventid STRING,
+          resources ARRAY<STRUCT<arn:STRING, accountid:STRING, type:STRING>>,
+          eventtype STRING,
+          apiversion STRING,
+          readonly STRING,
+          recipientaccountid STRING,
+          serviceeventdetails STRING,
+          sharedeventid STRING,
+          vpcendpointid STRING
+        )
+        PARTITIONED BY (`timestamp` STRING)
+        ROW FORMAT SERDE 'org.apache.hive.hcatalog.data.JsonSerDe'
+        STORED AS INPUTFORMAT 'com.amazon.emr.cloudtrail.CloudTrailInputFormat'
+        OUTPUTFORMAT 'org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat'
+        LOCATION 's3://${CloudTrailLogsBucket}/AWSLogs/${AWS::AccountId}/CloudTrail/${AWS::Region}/'
+        TBLPROPERTIES (
+          'projection.enabled'='true',
+          'projection.timestamp.type'='date',
+          'projection.timestamp.format'='yyyy/MM/dd',
+          'projection.timestamp.interval'='1',
+          'projection.timestamp.interval.unit'='DAYS',
+          'projection.timestamp.range'='${AuditStartDate},NOW',
+          'storage.location.template'='s3://${CloudTrailLogsBucket}/AWSLogs/${AWS::AccountId}/CloudTrail/${AWS::Region}/${!timestamp}'
+        )
+
+  # Audit question 1
+  # AUDIT QUESTION 1 - Who read / wrote / deleted objects in the tenant 3 bucket? (who, action, time, IP, file)
+  Query1Tenant3Access:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Name: '01 - Who accessed tenant-3 data?'
+      Description: Audit Q1 - who read/wrote/deleted objects in the tenant3 bucket
+      Database: !Ref AuditDatabase
+      WorkGroup: !Ref AuditWorkGroup
+      QueryString: !Sub |
+        SELECT eventtime,
+               useridentity.arn AS who,
+               eventname AS action,
+               sourceipaddress,
+               json_extract_scalar(requestparameters, '$.key') AS object_key,
+               errorcode
+        FROM cloudtrail_logs
+        WHERE eventsource = 's3.amazonaws.com'
+          AND eventname IN ('GetObject','PutObject','DeleteObject')
+          AND json_extract_scalar(requestparameters, '$.bucketName') = '${Tenant3Bucket}'
+          AND "timestamp" >= '${AuditStartDate}'
+        ORDER BY eventtime DESC
+        LIMIT 100
+
+  # Audit question 2
+  # AUDIT QUESTION 2 - Which API calls changed bucket policy, encryption, ACL or public-access settings, and who made them?
+  Query2PolicyChanges:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Name: '02 - What API calls modified bucket policies / encryption?'
+      Description: Audit Q2 - who changed bucket policy, encryption, ACL or public access settings
+      Database: !Ref AuditDatabase
+      WorkGroup: !Ref AuditWorkGroup
+      QueryString: !Sub |
+        SELECT eventtime,
+               useridentity.arn AS who,
+               eventname AS action,
+               json_extract_scalar(requestparameters, '$.bucketName') AS bucket,
+               sourceipaddress,
+               errorcode
+        FROM cloudtrail_logs
+        WHERE eventsource = 's3.amazonaws.com'
+          AND eventname IN ('PutBucketPolicy','DeleteBucketPolicy','PutBucketEncryption','DeleteBucketEncryption','PutBucketAcl','PutBucketPublicAccessBlock','DeletePublicAccessBlock')
+          AND "timestamp" >= '${AuditStartDate}'
+        ORDER BY eventtime DESC
+        LIMIT 100
+
+  # Audit question 3 (anomaly)
+  # AUDIT QUESTION 3 (anomaly) - Which requests on the tenant buckets were denied (AccessDenied)? Shows suspicious attempts.
+  Query3AccessDenied:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Name: '03 - Anomaly: denied access attempts on tenant buckets'
+      Description: Audit Q3 - failed/denied requests on the three tenant buckets
+      Database: !Ref AuditDatabase
+      WorkGroup: !Ref AuditWorkGroup
+      QueryString: !Sub |
+        SELECT eventtime,
+               useridentity.arn AS who,
+               eventname AS action,
+               json_extract_scalar(requestparameters, '$.bucketName') AS bucket,
+               errorcode,
+               sourceipaddress
+        FROM cloudtrail_logs
+        WHERE eventsource = 's3.amazonaws.com'
+          AND errorcode IN ('AccessDenied','Client.AccessDenied','AccessDeniedException')
+          AND json_extract_scalar(requestparameters, '$.bucketName') IN ('${Tenant1Bucket}','${Tenant2Bucket}','${Tenant3Bucket}')
+          AND "timestamp" >= '${AuditStartDate}'
+        ORDER BY eventtime DESC
+        LIMIT 100
+
+  # OUTPUTS: names/ARNs shown after deployment (bucket names, Lambda, SNS topic, workflow, databases...). Copy them into the README.
+Outputs:
+  Tenant1BucketName:
+    Description: Tenant 1 bucket
+    Value: !Ref Tenant1Bucket
+  Tenant2BucketName:
+    Description: Tenant 2 bucket
+    Value: !Ref Tenant2Bucket
+  Tenant3BucketName:
+    Description: Tenant 3 bucket
+    Value: !Ref Tenant3Bucket
+  ScannerLambdaArn:
+    Value: !GetAtt PIIScannerFunction.Arn
+  AlertTopicArn:
+    Value: !Ref PIIAlertTopic
+  PIIWorkflowArn:
+    Value: !Ref PIIWorkflow
+  GlueDatabaseName:
+    Value: !Ref HealthCatalogDatabase
+  RawCSVUploadRuleArn:
+    Description: EventBridge rule that triggers PII scanning for uploaded raw CSVs
+    Value: !GetAtt RawCSVUploadRule.Arn
+  CloudTrailLogsBucketName:
+    Value: !Ref CloudTrailLogsBucket
+  AuditTrailName:
+    Value: !Ref AuditTrail
+  AuditDatabaseOut:
+    Value: !Ref AuditDatabase
+  AuditWorkGroupName:
+    Value: !Ref AuditWorkGroup
