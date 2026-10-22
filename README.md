@@ -518,11 +518,102 @@ What we **did** deploy under the lab limits: the S3 bucket policies (Section 5.3
 
 ## 12. Incident response runbook
 
-> TODO: this section will be written in the next step. It will cover two scenarios:
-> 1. **The PII gate fails** (PII reaches `curated/` or no alert is sent).
-> 2. **An access control test fails** (an analyst sees another clinic's rows or a hidden column).
->
-> For each: detect, contain, investigate (with the audit queries), fix, and report.
+### 12.1 Purpose
+
+This runbook describes how our team responds when a security control fails in the Marrowick Health Analytics platform.
+
+We cover two scenarios:
+1. PII gate failure: Personal information reaches `curated/`, or an expected SNS alert is not sent.
+2. Access control failure: An analyst sees another clinic's records or a restricted column.
+
+For both scenarios, we follow: Detect → Contain → Investigate → Fix → Report.
+
+### 12.2 Team Responsibilities
+
+| Member | Responsibility |
+|---|---|
+| Inder | Investigate Lambda, Step Functions, S3 processing, and SNS |
+| Iatidel | Investigate Athena views and access controls |
+| Maha | Investigate CloudTrail logs with Athena and collect evidence |
+| All members | Document findings and verify corrective actions |
+
+### 12.3 Scenario 1 — PII Gate Failure
+
+**Example:** Sensitive information reaches `curated/` instead of `quarantine/`, or an expected SNS notification is missing.
+
+**Step 1 — Detect**
+- Check Step Functions execution history.
+- Review Lambda execution results and CloudWatch logs.
+- Inspect the `curated/` and `quarantine/` folders.
+- Check whether SNS sent the expected alert.
+
+**Step 2 — Contain**
+- Temporarily stop the affected workflow or new uploads, with team approval.
+- Restrict access to affected curated files.
+- Preserve the original files, logs, and screenshots.
+
+**Step 3 — Investigate**
+- Identify the affected clinic bucket and CSV file.
+- Review the Lambda scanner and Step Functions execution.
+- Search CloudTrail logs using Athena for `PutObject` and `GetObject` events.
+- Record the AWS identity, timestamp, object name, and outcome.
+
+**Step 4 — Fix**
+- Correct the Lambda scanner, workflow, or SNS configuration.
+- Isolate any incorrectly published files after preserving evidence.
+- Reprocess the synthetic CSV.
+- Verify clean rows reach `curated/` and flagged rows reach `quarantine/`.
+- Confirm the SNS notification works.
+
+**Step 5 — Report**
+- Record the incident, root cause, actions taken, and results.
+- Save S3, Step Functions, Lambda, SNS, and Athena screenshots.
+- Inform the team and instructor.
+
+### 12.4 Scenario 2 — Access Control Failure
+
+**Example:** A Clinic A analyst sees Clinic B records or restricted columns such as `patient_ref` or `notes_field`.
+
+**Step 1 — Detect**
+- Run the relevant Athena view.
+- Check the tenant IDs and visible columns.
+- Compare the results with the expected access-control matrix.
+
+**Step 2 — Contain**
+- Stop using the affected query or view.
+- Restrict access where AWS permissions allow.
+- Save the original query and results as evidence.
+
+**Step 3 — Investigate**
+- Review the Athena view's SQL filters and columns.
+- Check whether the underlying Glue tables are directly accessible.
+- Review IAM and S3 access permissions.
+- Search CloudTrail logs using Athena for relevant AWS activities.
+
+**Step 4 — Fix**
+- Correct the Athena view definition or permissions.
+- Re-run clinic and corporate view tests.
+- Confirm the views return only the intended rows and columns.
+- Document any restrictions that cannot be enforced in Learner Lab.
+
+**Step 5 — Report**
+- Record the affected view, findings, and root cause.
+- Preserve query results and screenshots.
+- Inform the team and instructor about the outcome.
+
+### 12.5 Evidence and Limitations
+
+For each incident, preserve:
+- Date and time
+- Affected AWS resources
+- AWS identity, if available
+- CloudTrail and Athena evidence
+- Relevant Lambda and Step Functions logs
+- Corrective actions and verification results
+
+The project uses synthetic data. Lake Formation restrictions prevented full fine-grained access controls. Athena views demonstrate filtering, but the shared `LabRole` does not enforce complete tenant isolation.
+
+This runbook documents proposed procedures and does not claim that a full incident-response exercise has been performed.
 
 ---
 
