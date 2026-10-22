@@ -1,7 +1,7 @@
 # Marrowick Health Analytics: Governance, Security and Compliance for a Multi-Tenant Data Lake
 
 **Course:** CCGC 5506 Mid Term Project (Project 4), Humber, Fall 2026
-**Team:** Iatidel Akik, Inderjitsingh Labana, Maha Al Tuhfi
+**Team:** Iatidel Akik, Inderjitsingh Labana, Maha Al-Tuhfi
 **Region:** US East (N. Virginia), `us-east-1`
 **CloudFormation stack name:** `marrowick-project`
 **Template file:** `infra/marrowick-health-merged.yml`
