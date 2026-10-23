@@ -1,0 +1,102 @@
+{
+  "_status": "DESIGN-ONLY. Not deployed: Lake Formation is blocked in the Learner Lab.",
+  "_how_to_use": "In a real account, each entry is the input of lakeformation CreateDataCellsFilter. Then grant SELECT on the filter to the matching analyst role.",
+  "_mapping": {
+    "clinic_a_filter": "Clinic A analyst",
+    "clinic_b_filter": "Clinic B analyst",
+    "clinic_c_filter": "Clinic C analyst",
+    "corporate_filter_tenant1/2/3": "Corporate analyst (one filter per table)"
+  },
+  "filters": [
+    {
+      "TableCatalogId": "<ACCOUNT_ID>",
+      "DatabaseName": "marrowick_health",
+      "TableName": "tenant1_curated",
+      "Name": "clinic_a_filter",
+      "RowFilter": {
+        "FilterExpression": "tenant_id = 'clinic-a'"
+      },
+      "ColumnWildcard": {
+        "ExcludedColumnNames": [
+          "patient_ref",
+          "notes_field"
+        ]
+      }
+    },
+    {
+      "TableCatalogId": "<ACCOUNT_ID>",
+      "DatabaseName": "marrowick_health",
+      "TableName": "tenant2_curated",
+      "Name": "clinic_b_filter",
+      "RowFilter": {
+        "FilterExpression": "tenant_id = 'clinic-b'"
+      },
+      "ColumnWildcard": {
+        "ExcludedColumnNames": [
+          "patient_ref",
+          "notes_field"
+        ]
+      }
+    },
+    {
+      "TableCatalogId": "<ACCOUNT_ID>",
+      "DatabaseName": "marrowick_health",
+      "TableName": "tenant3_curated",
+      "Name": "clinic_c_filter",
+      "RowFilter": {
+        "FilterExpression": "tenant_id = 'clinic-c'"
+      },
+      "ColumnWildcard": {
+        "ExcludedColumnNames": [
+          "patient_ref",
+          "notes_field"
+        ]
+      }
+    },
+    {
+      "TableCatalogId": "<ACCOUNT_ID>",
+      "DatabaseName": "marrowick_health",
+      "TableName": "tenant1_curated",
+      "Name": "corporate_filter_tenant1",
+      "RowFilter": {
+        "AllRowsWildcard": {}
+      },
+      "ColumnWildcard": {
+        "ExcludedColumnNames": [
+          "patient_ref",
+          "notes_field"
+        ]
+      }
+    },
+    {
+      "TableCatalogId": "<ACCOUNT_ID>",
+      "DatabaseName": "marrowick_health",
+      "TableName": "tenant2_curated",
+      "Name": "corporate_filter_tenant2",
+      "RowFilter": {
+        "AllRowsWildcard": {}
+      },
+      "ColumnWildcard": {
+        "ExcludedColumnNames": [
+          "patient_ref",
+          "notes_field"
+        ]
+      }
+    },
+    {
+      "TableCatalogId": "<ACCOUNT_ID>",
+      "DatabaseName": "marrowick_health",
+      "TableName": "tenant3_curated",
+      "Name": "corporate_filter_tenant3",
+      "RowFilter": {
+        "AllRowsWildcard": {}
+      },
+      "ColumnWildcard": {
+        "ExcludedColumnNames": [
+          "patient_ref",
+          "notes_field"
+        ]
+      }
+    }
+  ]
+}
