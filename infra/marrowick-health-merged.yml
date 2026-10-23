@@ -1,4 +1,4 @@
-AWSTemplateFormatVersion: '2010-09-09'
+git AWSTemplateFormatVersion: '2010-09-09'
 Description: 'Marrowick Health Analytics - Multi-tenant S3 + KMS + PII gate (Step Functions/Lambda/SNS) + Glue catalog + CloudTrail audit + Athena audit queries (no Lake Formation)'
 
 # ============================================================

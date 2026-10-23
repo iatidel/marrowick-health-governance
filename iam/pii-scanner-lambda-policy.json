@@ -1,0 +1,112 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DesignOnlyReadRawCsv",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": [
+        "arn:aws:s3:::marrowickh-tenant1/raw/*",
+        "arn:aws:s3:::marrowickh-tenant2/raw/*",
+        "arn:aws:s3:::marrowickh-tenant3/raw/*"
+      ]
+    },
+    {
+      "Sid": "DesignOnlyWriteCuratedAndQuarantine",
+      "Effect": "Allow",
+      "Action": "s3:PutObject",
+      "Resource": [
+        "arn:aws:s3:::marrowickh-tenant1/curated/*",
+        "arn:aws:s3:::marrowickh-tenant2/curated/*",
+        "arn:aws:s3:::marrowickh-tenant3/curated/*",
+        "arn:aws:s3:::marrowickh-tenant1/quarantine/*",
+        "arn:aws:s3:::marrowickh-tenant2/quarantine/*",
+        "arn:aws:s3:::marrowickh-tenant3/quarantine/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "s3:x-amz-server-side-encryption": "aws:kms"
+        }
+      }
+    },
+    {
+      "Sid": "DesignOnlyDeleteOldOutputFiles",
+      "Effect": "Allow",
+      "Action": "s3:DeleteObject",
+      "Resource": [
+        "arn:aws:s3:::marrowickh-tenant1/curated/*",
+        "arn:aws:s3:::marrowickh-tenant2/curated/*",
+        "arn:aws:s3:::marrowickh-tenant3/curated/*",
+        "arn:aws:s3:::marrowickh-tenant1/quarantine/*",
+        "arn:aws:s3:::marrowickh-tenant2/quarantine/*",
+        "arn:aws:s3:::marrowickh-tenant3/quarantine/*"
+      ]
+    },
+    {
+      "Sid": "DesignOnlyUseKmsKey",
+      "Effect": "Allow",
+      "Action": [
+        "kms:GenerateDataKey",
+        "kms:Decrypt",
+        "kms:DescribeKey"
+      ],
+      "Resource": "arn:aws:kms:us-east-1:<ACCOUNT_ID>:key/<KMS_KEY_ID>"
+    },
+    {
+      "Sid": "DesignOnlyWriteLambdaLogs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": "arn:aws:logs:us-east-1:<ACCOUNT_ID>:log-group:/aws/lambda/marrowick-project-pii-scanner:*"
+    },
+    {
+      "Sid": "DesignOnlyDenyChangingRawFiles",
+      "Effect": "Deny",
+      "Action": [
+        "s3:PutObject",
+        "s3:DeleteObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::marrowickh-tenant1/raw/*",
+        "arn:aws:s3:::marrowickh-tenant2/raw/*",
+        "arn:aws:s3:::marrowickh-tenant3/raw/*"
+      ]
+    },
+    {
+      "Sid": "DeployedAsBucketPolicyRequireKmsOnWrite",
+      "Effect": "Deny",
+      "Action": "s3:PutObject",
+      "Resource": [
+        "arn:aws:s3:::marrowickh-tenant1/*",
+        "arn:aws:s3:::marrowickh-tenant2/*",
+        "arn:aws:s3:::marrowickh-tenant3/*"
+      ],
+      "Condition": {
+        "StringNotEquals": {
+          "s3:x-amz-server-side-encryption": "aws:kms"
+        }
+      }
+    },
+    {
+      "Sid": "DeployedAsBucketPolicyDenyNonTLS",
+      "Effect": "Deny",
+      "Action": "s3:*",
+      "Resource": [
+        "arn:aws:s3:::marrowickh-tenant1",
+        "arn:aws:s3:::marrowickh-tenant2",
+        "arn:aws:s3:::marrowickh-tenant3",
+        "arn:aws:s3:::marrowickh-tenant1/*",
+        "arn:aws:s3:::marrowickh-tenant2/*",
+        "arn:aws:s3:::marrowickh-tenant3/*"
+      ],
+      "Condition": {
+        "Bool": {
+          "aws:SecureTransport": "false"
+        }
+      }
+    }
+  ]
+}

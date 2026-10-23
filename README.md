@@ -7,7 +7,6 @@
 **Template file:** `infra/marrowick-health-merged.yml`
 
 > **Note:** All data in this project is synthetic. No real patient data was used.
-> Lines that start with `TODO` are things we still need to fill in before the final submission.
 
 ---
 
@@ -186,8 +185,25 @@ Each clinic has its **own bucket** (physical separation, not only a prefix).
 - The key ARN is passed to the template as the parameter `KMSKeyArn`.
 - The buckets use **SSE-KMS** as default encryption, with bucket keys turned on.
 
-> TODO: describe the KMS key policy in 3 or 4 lines (who is the key administrator, who can use the key, and why). The rubric asks for the key policy to be "documented and justified".
-> TODO: write the effect of key rotation on old files. (Rotation keeps the old key material, so old files can still be decrypted. Only new encryption uses new key material.)
+**Key policy (what it allows and why):**
+The real key policy is saved in `iam/kms-key-policy.json` (account ID replaced by `<ACCOUNT_ID>`). It has two statements:
+
+| Statement | Who | What it allows |
+|---|---|---|
+| `Enable IAM User Permissions` | The account root (`arn:aws:iam::<ACCOUNT_ID>:root`) | `kms:*`. This is the standard console default. It lets IAM policies in the account grant access to the key, so `LabRole` can use the key for encrypt and decrypt through its own IAM permissions. |
+| `Allow access for Key Administrators` | `LabRole` | Manage the key only: create, describe, enable, disable, update, tag, delete, schedule deletion, rotate on demand. It does **not** list `kms:Encrypt`, `kms:Decrypt` or `kms:GenerateDataKey`. |
+
+- **No separate "key users" statement.** Encrypt and decrypt for S3, Lambda and Glue work because of the root statement plus the permissions that `LabRole` already has in IAM.
+- **Why a customer-managed key (and not the default S3 key):** we control the key policy, every use of the key is logged in CloudTrail, and we can turn on rotation.
+
+**Honest limits of this key policy:**
+- `LabRole` is both the key administrator and the role that uses the key (the lab has only one role). So there is **no separation of duties** between managing the key and using it.
+- The root statement is wide (`kms:*`). In production we would remove the broad root access from daily use, make an admin role that cannot decrypt, and add a separate key-user statement for the scanner and analyst roles with `kms:Decrypt` and `kms:GenerateDataKey` and a `kms:ViaService` condition.
+
+**Key rotation and old files:**
+- Automatic rotation is on (every 365 days). AWS keeps the **old key material**, so files that were already encrypted can still be decrypted. Nothing has to be re-encrypted.
+- New encryption uses the new key material. The key ID and ARN stay the same, so the buckets, Lambda and the CloudFormation parameter do not need to change.
+- Because the project only ran for a few weeks, no automatic rotation has happened yet. We turned the setting on and checked it, but we could not see a real rotation event.
 
 ### 5.3 Bucket policies (guardrails)
 Each tenant bucket has the same 3 **Deny** rules:
@@ -491,28 +507,90 @@ The Lake Formation calls that were denied in Section 7.2 are also API calls. The
 
 The Learner Lab does not let us create IAM roles or policies. Everything runs as `LabRole`. The rubric asks us to **design** least-privilege policies as JSON files and mark which statements could be deployed and which are design-only.
 
-> TODO: this section will be written in the next step. Planned files in the `iam/` folder:
-> - `iam/clinic-analyst-policy.json`
-> - `iam/corporate-analyst-policy.json`
-> - `iam/pii-scanner-lambda-policy.json`
-> - A table here showing **Deployable** vs **Design-only** for each statement.
+### 10.1 The policy files
 
-What we **did** deploy under the lab limits: the S3 bucket policies (Section 5.3), the KMS key, the Athena workgroup that forces encrypted results, and public access block on all buckets.
+All files are in the `iam/` folder. They are JSON documents written as **design artifacts**. We could not attach them to new roles, because the Learner Lab does not allow creating IAM roles or policies.
+
+| File | Role it is written for | What it allows |
+|---|---|---|
+| `iam/clinic-a-analyst-policy.json` | Clinic A analyst | Run Athena queries, read only `tenant1_curated` and `clinic_a_view` in Glue |
+| `iam/clinic-b-analyst-policy.json` | Clinic B analyst | Same pattern for `tenant2_curated` and `clinic_b_view` |
+| `iam/clinic-c-analyst-policy.json` | Clinic C analyst | Same pattern for `tenant3_curated` and `clinic_c_view` |
+| `iam/corporate-analyst-policy.json` | Corporate analyst | Read all 3 curated tables and `corporate_view`. No access to the clinic views |
+| `iam/pii-scanner-lambda-policy.json` | PII scanner Lambda | Read `raw/`, write `curated/` and `quarantine/` with KMS only, write its own logs |
+| `iam/kms-key-policy.json` | KMS key (resource-based policy) | The **real, deployed** key policy. Account ID replaced by a placeholder |
+| `iam/lakeformation-data-filters-design-only.json` | Lake Formation filters | 3 row filters (one per clinic) and 3 corporate filters. Both hide `patient_ref` and `notes_field` |
+
+The `<ACCOUNT_ID>`, `<KMS_KEY_ID>` and `<ANALYST_WORKGROUP>` values are placeholders. We did not put the real account ID in the repository.
+
+### 10.2 How the statements are labeled
+JSON policies cannot hold comments, so the label is the start of each `Sid` (statement name):
+
+| Sid starts with | Meaning |
+|---|---|
+| `Deployed...` | The same rule **is deployed** in our stack, but as a **resource-based policy** (bucket policy). (`kms-key-policy.json` is a real key policy and keeps its original statement names.) It is repeated in the identity policy so the file shows the full design. |
+| `DesignOnly...` | **Not deployed.** It is an identity-based statement. It needs a separate IAM role, and the Learner Lab does not let us create one. |
+
+### 10.3 Main design rules (least privilege)
+
+| Rule | Statement |
+|---|---|
+| Analysts never read S3 data directly | `DesignOnlyDenyDirectTenantBucketAccess` denies `s3:*` on all 3 tenant buckets. They reach data only through Athena and Lake Formation (`lakeformation:GetDataAccess`). |
+| A clinic analyst sees only their own clinic | Glue read is allowed only on their own table and view. `DesignOnlyDenyOtherClinicsAndCorporateObjects` denies the other clinics and `corporate_view`. |
+| Corporate analyst has no clinic views | `DesignOnlyDenyClinicViews`. |
+| Nobody weakens the controls | `DesignOnlyDenyChangingSecurityControls` denies changing bucket policies, KMS rotation, CloudTrail and Lake Formation settings. |
+| Scanner cannot edit original files | `DesignOnlyDenyChangingRawFiles` denies write and delete in `raw/`. |
+| Scanner must use KMS | `DeployedAsBucketPolicyRequireKmsOnWrite` (deployed as the bucket policy rule `DenyIncorrectEncryption`). |
+| HTTPS only | `DeployedAsBucketPolicyDenyNonTLS` (deployed as the bucket policy rule `DenyNonTLSAccess`). |
+
+### 10.4 Honest limit: IAM alone cannot hide rows or columns
+IAM policies control **which objects and tables** a role can touch. They cannot filter **rows** or hide **columns** inside a table. Also, with IAM only, a user who queries a view in Athena still needs permission to read the base table and its S3 data. That is why the views in Section 7 are not real enforcement.
+
+Row and column control needs **Lake Formation**. The file `lakeformation-data-filters-design-only.json` shows what we would deploy. It was not deployed because Lake Formation is blocked.
+
+### 10.5 What we checked
+We checked that every JSON file is valid. We did **not** deploy them or test them with IAM Access Analyzer, because the lab blocks IAM changes.
+
+### 10.6 What we really deployed under the lab limits
+These controls are really deployed: the S3 bucket policies (Section 5.3), the KMS key, the Athena workgroup that forces encrypted results, and public access block on all buckets.
 
 ---
 
 ## 11. Compliance mapping (simplified PIPEDA-style)
 
-> TODO: this section will be written in the next step. It will connect each control to a PIPEDA principle:
->
-> | Control we built | PIPEDA-style principle |
-> |---|---|
-> | KMS encryption, bucket policies | Safeguards |
-> | Tenant buckets, Athena views | Limiting use, disclosure and access |
-> | PII gate | Limiting collection, Safeguards |
-> | CloudTrail + Athena queries | Accountability |
->
-> It will also include an honest **"Not covered / out of scope"** list (for example: consent, individual access requests, data retention, full regulatory certification).
+We mapped our controls to the 10 fair information principles of PIPEDA (Canada's private-sector privacy law). This is a **simplified student mapping**. It is not legal advice and it is not a certification. All data in this project is synthetic.
+
+### 11.1 Controls mapped to principles
+
+| Control we built | PIPEDA principle | How it supports the principle | Evidence | Status |
+|---|---|---|---|---|
+| KMS customer-managed key, SSE-KMS on tenant buckets, rotation on | 4.7 Safeguards | Data is encrypted at rest. We control the key and its use. | Section 5.2 | Implemented |
+| Bucket policies (HTTPS only, KMS only) and public access block | 4.7 Safeguards | Blocks unencrypted uploads and unsafe access. | Section 5.3, `evidence/08-...png` | Implemented and tested |
+| One bucket per clinic | 4.5 Limiting use, disclosure and retention; 4.7 Safeguards | Clinic data is kept apart (physical separation). | Section 5.1 | Implemented |
+| Regex PII gate with quarantine | 4.4 Limiting collection; 4.7 Safeguards | Personal information is kept out of the curated zone. | Section 6, alert emails | Implemented and tested |
+| SNS alert when PII is found | 4.1 Accountability; 4.7 Safeguards | The team is told right away when the gate catches something. | `evidence/06-email_alert_*.png` | Implemented and tested |
+| Athena views hide `patient_ref`, `notes_field` and other clinics' rows | 4.5 Limiting use and disclosure | Shows the intended access rules. | Section 7.3, 7.4 | **Partial.** Not enforced by AWS (single role) |
+| IAM policy design | 4.7 Safeguards; 4.5 Limiting use and disclosure | Documents least privilege for each role. | Section 10 | **Design only** |
+| CloudTrail + Athena audit queries | 4.1 Accountability | Shows who accessed or changed what. | Section 9 | Implemented and tested |
+| Incident response runbook | 4.1 Accountability; 4.7 Safeguards | Defines how we respond if a control fails. | Section 12 | Documented, not exercised |
+| Synthetic, de-identified data | 4.4 Limiting collection | No real personal data is collected. | Section 1 | Implemented |
+
+### 11.2 Not covered / out of scope
+
+| Not covered | Why |
+|---|---|
+| 4.2 Identifying purposes and 4.3 Consent | Needs real patients and clinic agreements. We use synthetic data. |
+| 4.6 Accuracy | We do not check if the data is correct. We only check for PII. |
+| 4.5 Retention and deletion | No S3 lifecycle rules and no retention schedule. |
+| 4.8 Openness | No privacy policy or public statement. |
+| 4.9 Individual access | No process for a person to ask for their data. |
+| 4.10 Challenging compliance | No complaint process. |
+| Breach notification to the Privacy Commissioner and to people | Our runbook covers technical steps only. |
+| Real enforcement of access control | Lake Formation is blocked and the lab has one role (Sections 7 and 8). |
+| Complete PII detection | Regex only. Amazon Macie was not used. A pattern can miss PII. |
+| CMK encryption of the CloudTrail logs bucket | It uses AES256 (Section 5.4). |
+| Monitoring and alarms | No CloudWatch dashboard or alarms for failed access. |
+| Legal or regulatory certification | This is a learning project. We do **not** claim PIPEDA compliance. |
 
 ---
 
@@ -652,14 +730,20 @@ This runbook documents proposed procedures and does not claim that a full incide
 │   ├── clinic_c_view.sql
 │   ├── corporate_view.sql
 │   └── audit_queries.sql        (queries 00 to 03)
-├── iam/                         (to be added)
+├── iam/
+│   ├── clinic-a-analyst-policy.json
+│   ├── clinic-b-analyst-policy.json
+│   ├── clinic-c-analyst-policy.json
+│   ├── corporate-analyst-policy.json
+│   ├── pii-scanner-lambda-policy.json
+│   ├── kms-key-policy.json
+│   └── lakeformation-data-filters-design-only.json
 └── evidence/                    (all screenshots)
 ```
 
-> TODO: add `docs/` or sections for the compliance table and the runbook if you decide to keep them in separate files.
 
 ---
 
 ## 16. Team
 
-Iatidel Akik, Inderjitsingh Labana, Maha Al Tuhfi
+Iatidel Akik, Inderjitsingh Labana, Maha Al-Tuhfi

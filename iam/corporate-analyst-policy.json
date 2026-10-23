@@ -1,0 +1,129 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DesignOnlyAthenaRunQueries",
+      "Effect": "Allow",
+      "Action": [
+        "athena:StartQueryExecution",
+        "athena:StopQueryExecution",
+        "athena:GetQueryExecution",
+        "athena:GetQueryResults",
+        "athena:GetWorkGroup"
+      ],
+      "Resource": "arn:aws:athena:us-east-1:<ACCOUNT_ID>:workgroup/<ANALYST_WORKGROUP>"
+    },
+    {
+      "Sid": "DesignOnlyGlueReadAllTablesAndCorporateView",
+      "Effect": "Allow",
+      "Action": [
+        "glue:GetDatabase",
+        "glue:GetTable",
+        "glue:GetTables",
+        "glue:GetPartitions"
+      ],
+      "Resource": [
+        "arn:aws:glue:us-east-1:<ACCOUNT_ID>:catalog",
+        "arn:aws:glue:us-east-1:<ACCOUNT_ID>:database/marrowick_health",
+        "arn:aws:glue:us-east-1:<ACCOUNT_ID>:table/marrowick_health/tenant1_curated",
+        "arn:aws:glue:us-east-1:<ACCOUNT_ID>:table/marrowick_health/tenant2_curated",
+        "arn:aws:glue:us-east-1:<ACCOUNT_ID>:table/marrowick_health/tenant3_curated",
+        "arn:aws:glue:us-east-1:<ACCOUNT_ID>:table/marrowick_health/corporate_view"
+      ]
+    },
+    {
+      "Sid": "DesignOnlyLakeFormationDataAccess",
+      "Effect": "Allow",
+      "Action": "lakeformation:GetDataAccess",
+      "Resource": "*"
+    },
+    {
+      "Sid": "DesignOnlyAthenaResultsBucket",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:GetBucketLocation",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::marrowickh-athena-results-<ACCOUNT_ID>",
+        "arn:aws:s3:::marrowickh-athena-results-<ACCOUNT_ID>/*"
+      ]
+    },
+    {
+      "Sid": "DesignOnlyUseKmsKeyForResults",
+      "Effect": "Allow",
+      "Action": [
+        "kms:Decrypt",
+        "kms:GenerateDataKey",
+        "kms:DescribeKey"
+      ],
+      "Resource": "arn:aws:kms:us-east-1:<ACCOUNT_ID>:key/<KMS_KEY_ID>"
+    },
+    {
+      "Sid": "DesignOnlyDenyDirectTenantBucketAccess",
+      "Effect": "Deny",
+      "Action": "s3:*",
+      "Resource": [
+        "arn:aws:s3:::marrowickh-tenant1",
+        "arn:aws:s3:::marrowickh-tenant2",
+        "arn:aws:s3:::marrowickh-tenant3",
+        "arn:aws:s3:::marrowickh-tenant1/*",
+        "arn:aws:s3:::marrowickh-tenant2/*",
+        "arn:aws:s3:::marrowickh-tenant3/*"
+      ]
+    },
+    {
+      "Sid": "DesignOnlyDenyClinicViews",
+      "Effect": "Deny",
+      "Action": [
+        "glue:GetDatabase",
+        "glue:GetTable",
+        "glue:GetTables",
+        "glue:GetPartitions"
+      ],
+      "Resource": [
+        "arn:aws:glue:us-east-1:<ACCOUNT_ID>:table/marrowick_health/clinic_a_view",
+        "arn:aws:glue:us-east-1:<ACCOUNT_ID>:table/marrowick_health/clinic_b_view",
+        "arn:aws:glue:us-east-1:<ACCOUNT_ID>:table/marrowick_health/clinic_c_view"
+      ]
+    },
+    {
+      "Sid": "DesignOnlyDenyChangingSecurityControls",
+      "Effect": "Deny",
+      "Action": [
+        "s3:PutBucketPolicy",
+        "s3:DeleteBucketPolicy",
+        "s3:PutEncryptionConfiguration",
+        "s3:PutBucketPublicAccessBlock",
+        "kms:DisableKey",
+        "kms:ScheduleKeyDeletion",
+        "kms:DisableKeyRotation",
+        "cloudtrail:StopLogging",
+        "cloudtrail:DeleteTrail",
+        "lakeformation:GrantPermissions",
+        "lakeformation:PutDataLakeSettings"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DeployedAsBucketPolicyDenyNonTLS",
+      "Effect": "Deny",
+      "Action": "s3:*",
+      "Resource": [
+        "arn:aws:s3:::marrowickh-tenant1",
+        "arn:aws:s3:::marrowickh-tenant2",
+        "arn:aws:s3:::marrowickh-tenant3",
+        "arn:aws:s3:::marrowickh-tenant1/*",
+        "arn:aws:s3:::marrowickh-tenant2/*",
+        "arn:aws:s3:::marrowickh-tenant3/*"
+      ],
+      "Condition": {
+        "Bool": {
+          "aws:SecureTransport": "false"
+        }
+      }
+    }
+  ]
+}
